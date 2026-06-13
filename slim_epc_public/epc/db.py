@@ -68,7 +68,22 @@ class EPCRepository:
         raw = row["data"]
         return UEState.model_validate_json(raw)
 
+    def _validate_state_invariants(self, state: UEState) -> None:
+        if 9 not in state.bearers:
+            raise ValueError("Default bearer missing")
+        for key, bearer in state.bearers.items():
+            if key != bearer.bearer_id:
+                raise ValueError("Bearer ID mismatch")
+        for key, stats in state.stats.items():
+            if key != stats.bearer_id:
+                raise ValueError("Stats bearer ID mismatch")
+            if stats.ue_id != state.ue_id:
+                raise ValueError("Stats UE mismatch")
+            if key not in state.bearers:
+                raise ValueError("Bearer not found")
+
     def save_ue(self, state: UEState) -> None:
+        self._validate_state_invariants(state)
         with self._conn() as c:
             c.execute(
                 "INSERT OR REPLACE INTO ue_state (ue_id, data) VALUES (?, ?)",
@@ -84,11 +99,17 @@ class EPCRepository:
 
     def update_bearer(self, ue_id: int, bearer: BearerConfig) -> None:
         state = self.get_ue(ue_id)
+        if bearer.bearer_id not in state.bearers:
+            raise ValueError("Bearer not found")
         state.bearers[bearer.bearer_id] = bearer
         self.save_ue(state)
 
     def update_stats(self, ue_id: int, stats: ThroughputStats) -> None:
         state = self.get_ue(ue_id)
+        if stats.ue_id != ue_id:
+            raise ValueError("Stats UE mismatch")
+        if stats.bearer_id not in state.bearers:
+            raise ValueError("Bearer not found")
         state.stats[stats.bearer_id] = stats
         self.save_ue(state)
 
@@ -97,9 +118,9 @@ class EPCRepository:
             self.detach_ue(ue_id)
 
     def delete_bearer(self, ue_id: int, bearer_id: int) -> None:
+        state = self.get_ue(ue_id)
         if bearer_id == 9:
             raise ValueError("Cannot remove default bearer")
-        state = self.get_ue(ue_id)
         if bearer_id not in state.bearers:
             raise ValueError("Bearer not found")
         state.bearers.pop(bearer_id, None)
