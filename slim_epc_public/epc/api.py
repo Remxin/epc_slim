@@ -123,6 +123,26 @@ def get_ue(ue_id: int, repo: Annotated[EPCRepository, Depends(get_repo)]):
     return UEDisplayResponse(**state.model_dump())
 
 
+@router.delete("/ues/{ue_id}/traffic", response_model=StatusResponse)
+def stop_all_traffic_for_ue(
+    ue_id: int,
+    repo: Annotated[EPCRepository, Depends(get_repo)],
+):
+    try:
+        state = repo.get_ue(ue_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    tm = get_traffic_manager(repo)
+    stopped = 0
+    for bearer_id, bearer in state.bearers.items():
+        if tm.is_running(ue_id, bearer_id):
+            tm.stop(ue_id, bearer_id)
+            bearer.active = False
+            repo.update_bearer(ue_id, bearer)
+            stopped += 1
+    return StatusResponse(status=f"stopped {stopped} bearer(s)")
+
+
 @router.delete("/ues/{ue_id}", response_model=DetachResponse)
 def detach_ue(ue_id: int, repo: Annotated[EPCRepository, Depends(get_repo)]):
     try:
@@ -178,7 +198,10 @@ def start_traffic(
     body: StartTrafficRequest,
     repo: Annotated[EPCRepository, Depends(get_repo)],
 ):
-    target_bps = body.target_bps()
+    try:
+        target_bps = body.target_bps()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     try:
         state = repo.get_ue(ue_id)
     except ValueError as e:
@@ -186,6 +209,19 @@ def start_traffic(
     bearer = state.bearers.get(bearer_id)
     if not bearer:
         raise HTTPException(status_code=400, detail="Bearer not found")
+    active_sum = sum(
+        b.target_bps
+        for b_id, b in state.bearers.items()
+        if b.active and b.target_bps and b_id != bearer_id
+    )
+    if active_sum + target_bps > 100_000_000:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"UE aggregate throughput would exceed 100 Mbps "
+                f"(active: {active_sum // 1000} kbps + requested: {target_bps // 1000} kbps)"
+            ),
+        )
     bearer.protocol = body.protocol.lower()
     bearer.target_bps = target_bps
     bearer.active = True

@@ -1,4 +1,8 @@
-from pydantic import BaseModel, Field, model_validator
+import math
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+MAX_BEARER_BPS = 100_000_000  # 100 Mbps per bearer
 
 
 class BearerConfig(BaseModel):
@@ -43,7 +47,10 @@ class AddBearerRequest(BaseModel):
 
 
 class StartTrafficRequest(BaseModel):
-    protocol: str = Field(pattern="^(tcp|udp)$")
+    model_config = ConfigDict(strict=True)
+
+    protocol: str = Field(default="tcp", pattern="^(tcp|udp)$")
+    direction: str = Field(default="DL", pattern="^DL$")
     Mbps: float | None = None
     kbps: float | None = None
     bps: float | None = None
@@ -57,10 +64,21 @@ class StartTrafficRequest(BaseModel):
 
     def target_bps(self) -> int:
         if self.Mbps is not None:
-            return int(self.Mbps * 1_000_000)
-        if self.kbps is not None:
-            return int(self.kbps * 1_000)
-        return int(self.bps or 0)
+            raw = self.Mbps * 1_000_000
+        elif self.kbps is not None:
+            raw = self.kbps * 1_000
+        else:
+            raw = self.bps or 0
+        if math.isnan(raw) or math.isinf(raw):
+            raise ValueError("Throughput must be a finite number")
+        result = int(raw)
+        if result <= 0:
+            raise ValueError("Throughput must be greater than 0")
+        if result > MAX_BEARER_BPS:
+            raise ValueError(
+                f"Bearer throughput exceeds maximum of {MAX_BEARER_BPS // 1_000_000} Mbps"
+            )
+        return result
 
 
 # Response Schemas
