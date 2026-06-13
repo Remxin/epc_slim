@@ -1,7 +1,7 @@
 import time
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from .models import (
     AddBearerRequest,
@@ -25,6 +25,30 @@ from .traffic import get_traffic_manager
 router = APIRouter()
 
 _repo_singleton: EPCRepository | None = None
+TrafficUnit = Literal["bps", "kbps", "Mbps", "mbps"]
+
+
+def _unit_divisor(unit: TrafficUnit) -> int:
+    return 1_000_000 if unit in {"Mbps", "mbps"} else {"bps": 1, "kbps": 1_000}[unit]
+
+
+def _convert_rate(value: int | None, unit: TrafficUnit) -> int | None:
+    if value is None:
+        return None
+    return int(value / _unit_divisor(unit))
+
+
+def _throughput_bps(stats: "ThroughputStats", is_running: bool) -> tuple[int, int, float]:
+    end_ts = time.time() if (stats.start_ts and is_running) else stats.last_update_ts
+    duration = (end_ts - stats.start_ts) if (stats.start_ts and end_ts is not None) else 0
+    tx_bps = int(stats.bytes_tx * 8 / duration) if duration > 0 else 0
+    rx_bps = int(stats.bytes_rx * 8 / duration) if duration > 0 else 0
+    return tx_bps, rx_bps, duration
+
+
+def _require_existing_bearer(state: "UEState", bearer_id: int) -> None:
+    if bearer_id < 1 or bearer_id > 9 or bearer_id not in state.bearers:
+        raise HTTPException(status_code=400, detail="Bearer not found")
 
 
 def get_repo() -> EPCRepository:
@@ -39,6 +63,7 @@ def get_ues_stats(
     repo: Annotated[EPCRepository, Depends(get_repo)],
     ue_id: int | None = None,
     include_details: bool = False,
+    unit: TrafficUnit = Query(default="bps"),
 ):
     if ue_id is not None and not repo.ue_exists(ue_id):
         raise HTTPException(status_code=400, detail="UE not found")
@@ -56,15 +81,14 @@ def get_ues_stats(
                 raise HTTPException(status_code=400, detail="UE not found")
             continue
         for b_id, stats in state.stats.items():
-            end_ts = time.time() if (stats.start_ts and tm.is_running(uid, b_id)) else stats.last_update_ts
-            duration = (end_ts - stats.start_ts) if (stats.start_ts and end_ts is not None) else 0
-            tx_bps = int(stats.bytes_tx * 8 / duration) if duration > 0 else 0
-            rx_bps = int(stats.bytes_rx * 8 / duration) if duration > 0 else 0
-            total_tx += tx_bps
-            total_rx += rx_bps
+            tx_bps, rx_bps, _duration = _throughput_bps(stats, tm.is_running(uid, b_id))
+            tx = _convert_rate(tx_bps, unit)
+            rx = _convert_rate(rx_bps, unit)
+            total_tx += tx
+            total_rx += rx
             bearer_count += 1
             if include_details:
-                details.setdefault(str(uid), {})[str(b_id)] = tx_bps
+                details.setdefault(str(uid), {})[str(b_id)] = tx
     scope = f"ue:{ue_id}" if ue_id is not None else "all"
     return AggregatedStatsResponse(
         scope=scope,
@@ -207,7 +231,10 @@ def stop_traffic(
     tm = get_traffic_manager(repo)
     tm.stop(ue_id, bearer_id)
     bearer.active = False
-    repo.update_bearer(ue_id, bearer)
+    bearer.protocol = None
+    bearer.target_bps = None
+    state.stats.pop(bearer_id, None)
+    repo.save_ue(state)
     return TrafficStopResponse(status="traffic_stopped", ue_id=ue_id, bearer_id=bearer_id)
 
 
@@ -216,11 +243,13 @@ def get_traffic_stats(
     ue_id: int,
     bearer_id: int,
     repo: Annotated[EPCRepository, Depends(get_repo)],
+    unit: TrafficUnit = Query(default="bps"),
 ):
     try:
         state = repo.get_ue(ue_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    _require_existing_bearer(state, bearer_id)
     stats = state.stats.get(bearer_id)
     if not stats:
         return TrafficStatsResponse(
@@ -233,17 +262,14 @@ def get_traffic_stats(
             duration=0,
         )
     tm = get_traffic_manager(repo)
-    end_ts = time.time() if (stats.start_ts and tm.is_running(ue_id, bearer_id)) else stats.last_update_ts
-    duration = (end_ts - stats.start_ts) if (stats.start_ts and end_ts is not None) else 0
-    tx_bps = int(stats.bytes_tx * 8 / duration) if duration > 0 else 0
-    rx_bps = int(stats.bytes_rx * 8 / duration) if duration > 0 else 0
+    tx_bps, rx_bps, duration = _throughput_bps(stats, tm.is_running(ue_id, bearer_id))
     return TrafficStatsResponse(
         ue_id=ue_id,
         bearer_id=bearer_id,
         protocol=stats.protocol,
-        target_bps=stats.target_bps,
-        tx_bps=tx_bps,
-        rx_bps=rx_bps,
+        target_bps=_convert_rate(stats.target_bps, unit),
+        tx_bps=_convert_rate(tx_bps, unit),
+        rx_bps=_convert_rate(rx_bps, unit),
         duration=duration,
     )
 

@@ -274,9 +274,7 @@ class TestDeleteBearer:
         response = test_client.delete("/ues/1/bearers/1")
 
         assert response.status_code == 200
-        stats = test_client.get("/ues/1/bearers/1/traffic").json()
-        assert stats["tx_bps"] == 0
-        assert stats["rx_bps"] == 0
+        assert_400(test_client.get("/ues/1/bearers/1/traffic"), "Bearer not found")
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +428,23 @@ class TestStopTraffic:
 
         assert_400(response, "Bearer not found")
 
+    def test_stop_traffic_clears_stats_and_bearer_traffic_config(self, test_client):
+        attach_ue(test_client, ue_id=1)
+        start_traffic(test_client, ue_id=1, bearer_id=9, protocol="udp", Mbps=1.0)
+        time.sleep(1.2)
+
+        response = test_client.delete("/ues/1/bearers/9/traffic")
+
+        assert response.status_code == 200
+        ue = test_client.get("/ues/1").json()
+        assert ue["stats"] == {}
+        assert ue["bearers"]["9"] == {
+            "bearer_id": 9,
+            "protocol": None,
+            "target_bps": None,
+            "active": False,
+        }
+
 
 class TestGetTrafficStats:
     def test_get_traffic_stats_before_start_returns_zeros(self, test_client):
@@ -448,18 +463,27 @@ class TestGetTrafficStats:
             "duration": 0,
         }
 
-    def test_get_traffic_stats_unknown_bearer_returns_200_with_zeros(self, test_client):
+    def test_get_traffic_stats_unknown_bearer_returns_400(self, test_client):
         attach_ue(test_client, ue_id=1)
 
         response = test_client.get("/ues/1/bearers/99/traffic")
 
-        assert response.status_code == 200
-        body = response.json()
-        assert body["ue_id"] == 1
-        assert body["bearer_id"] == 99
-        assert body["tx_bps"] == 0
-        assert body["rx_bps"] == 0
-        assert body["duration"] == 0
+        assert_400(response, "Bearer not found")
+
+    def test_get_traffic_stats_unassigned_bearer_returns_400(self, test_client):
+        attach_ue(test_client, ue_id=1)
+
+        response = test_client.get("/ues/1/bearers/1/traffic")
+
+        assert_400(response, "Bearer not found")
+
+    @pytest.mark.parametrize("bearer_id", [0, 10])
+    def test_get_traffic_stats_bearer_id_out_of_range_returns_400(self, test_client, bearer_id):
+        attach_ue(test_client, ue_id=1)
+
+        response = test_client.get(f"/ues/1/bearers/{bearer_id}/traffic")
+
+        assert_400(response, "Bearer not found")
 
     def test_get_traffic_stats_missing_ue_returns_400(self, test_client):
         response = test_client.get("/ues/99/bearers/1/traffic")
@@ -481,6 +505,38 @@ class TestGetTrafficStats:
         assert body["tx_bps"] > 0
         assert body["rx_bps"] > 0
         assert body["duration"] > 0
+
+    def test_get_traffic_stats_unit_kbps_converts_rates(self, test_client):
+        attach_ue(test_client, ue_id=1)
+        start_traffic(test_client, ue_id=1, bearer_id=9, Mbps=1.0)
+        time.sleep(1.2)
+
+        response = test_client.get("/ues/1/bearers/9/traffic", params={"unit": "kbps"})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["target_bps"] == 1000
+        assert body["tx_bps"] > 0
+        assert body["tx_bps"] < 10_000
+        assert body["rx_bps"] > 0
+        assert body["rx_bps"] < 10_000
+
+    def test_get_traffic_stats_invalid_unit_returns_422(self, test_client):
+        attach_ue(test_client, ue_id=1)
+
+        response = test_client.get("/ues/1/bearers/9/traffic", params={"unit": "invalid"})
+
+        assert_422(response)
+
+    def test_get_traffic_stats_after_bearer_delete_returns_400(self, test_client):
+        attach_ue(test_client, ue_id=1)
+        add_bearer(test_client, ue_id=1, bearer_id=1)
+        start_traffic(test_client, ue_id=1, bearer_id=1, Mbps=1.0)
+        test_client.delete("/ues/1/bearers/1")
+
+        response = test_client.get("/ues/1/bearers/1/traffic")
+
+        assert_400(response, "Bearer not found")
 
 
 # ---------------------------------------------------------------------------
@@ -563,6 +619,47 @@ class TestAggregatedStats:
         response = test_client.get("/ues/stats", params={"include_details": "not-a-bool"})
 
         assert_422(response)
+
+    def test_stats_invalid_unit_query_returns_422(self, test_client):
+        response = test_client.get("/ues/stats", params={"unit": "invalid"})
+
+        assert_422(response)
+
+    def test_stats_unit_kbps_converts_aggregate_and_details(self, test_client):
+        attach_ue(test_client, ue_id=1)
+        start_traffic(test_client, ue_id=1, bearer_id=9, Mbps=1.0)
+        time.sleep(1.2)
+
+        response = test_client.get(
+            "/ues/stats",
+            params={"unit": "kbps", "include_details": True},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["total_tx_bps"] > 0
+        assert body["total_tx_bps"] < 10_000
+        assert body["total_rx_bps"] > 0
+        assert body["total_rx_bps"] < 10_000
+        assert body["details"]["1"]["9"] == body["total_tx_bps"]
+
+    def test_stats_after_stop_excludes_stopped_traffic(self, test_client):
+        attach_ue(test_client, ue_id=1)
+        start_traffic(test_client, ue_id=1, bearer_id=9, Mbps=1.0)
+        time.sleep(1.2)
+
+        test_client.delete("/ues/1/bearers/9/traffic")
+        response = test_client.get("/ues/stats", params={"include_details": True})
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "scope": "all",
+            "ue_count": 1,
+            "bearer_count": 0,
+            "total_tx_bps": 0,
+            "total_rx_bps": 0,
+            "details": {},
+        }
 
 
 # ---------------------------------------------------------------------------
