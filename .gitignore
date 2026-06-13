@@ -4,3 +4,4 @@ slim_epc_public/__pycache__/*
 
 python-testing-training/*
 .DS_Store
+slim_epc_public/epc_simulator.egg-info/
