@@ -1,14 +1,26 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
 from epc.api import router
 from epc.db import EPCRepository
 from epc.traffic import get_traffic_manager
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    repo = EPCRepository()
+    tm = get_traffic_manager(repo)
+    tm.stop_all()
+
+
 app = FastAPI(
     title="Simple EPC Simulator",
     docs_url="/docs",
     redoc_url="/redoc",
-    openapi_url="/openapi.json"
+    openapi_url="/openapi.json",
+    lifespan=lifespan,
 )
 app.include_router(router)
 
