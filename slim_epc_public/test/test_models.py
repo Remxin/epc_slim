@@ -14,6 +14,7 @@ from epc.models import (
     AttachUERequest,
     BearerConfig,
     StartTrafficRequest,
+    ThroughputStats,
     UEState,
 )
 
@@ -61,6 +62,55 @@ class TestBearerConfigDefaults:
     def test_default_target_bps_is_none(self):
         cfg = BearerConfig(bearer_id=1)
         assert cfg.target_bps is None
+
+
+# --- ThroughputStats ---
+
+
+class TestThroughputStatsDefaults:
+    def test_bytes_tx_default_is_zero(self):
+        stats = ThroughputStats(bearer_id=1, ue_id=1)
+        assert stats.bytes_tx == 0
+
+    def test_bytes_rx_default_is_zero(self):
+        stats = ThroughputStats(bearer_id=1, ue_id=1)
+        assert stats.bytes_rx == 0
+
+    def test_start_ts_default_is_none(self):
+        stats = ThroughputStats(bearer_id=1, ue_id=1)
+        assert stats.start_ts is None
+
+    def test_last_update_ts_default_is_none(self):
+        stats = ThroughputStats(bearer_id=1, ue_id=1)
+        assert stats.last_update_ts is None
+
+    def test_protocol_default_is_none(self):
+        stats = ThroughputStats(bearer_id=1, ue_id=1)
+        assert stats.protocol is None
+
+    def test_target_bps_default_is_none(self):
+        stats = ThroughputStats(bearer_id=1, ue_id=1)
+        assert stats.target_bps is None
+
+    def test_explicit_values_stored(self):
+        stats = ThroughputStats(
+            bearer_id=3,
+            ue_id=7,
+            bytes_tx=1000,
+            bytes_rx=2000,
+            start_ts=1.0,
+            last_update_ts=2.5,
+            protocol="tcp",
+            target_bps=500_000,
+        )
+        assert stats.bearer_id == 3
+        assert stats.ue_id == 7
+        assert stats.bytes_tx == 1000
+        assert stats.bytes_rx == 2000
+        assert stats.start_ts == 1.0
+        assert stats.last_update_ts == 2.5
+        assert stats.protocol == "tcp"
+        assert stats.target_bps == 500_000
 
 
 # --- StartTrafficRequest ---
