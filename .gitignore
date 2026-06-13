@@ -1,0 +1,8 @@
+slim_epc_public/test/__pycache__/*
+slim_epc_public/epc/__pycache__/*
+slim_epc_public/__pycache__/*
+
+python-testing-training/*
+**/.DS_Store
+**/.venv
+**/epc_simulator.egg-info
