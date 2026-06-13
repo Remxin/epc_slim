@@ -168,12 +168,16 @@ class TestStartTrafficRequestTargetBps:
 
     @pytest.mark.parametrize("bps,expected", [
         (1000, 1000),
-        (0, 0),
         (9_999_999, 9_999_999),
     ])
     def test_bps_passthrough(self, bps, expected):
         req = StartTrafficRequest(protocol="tcp", bps=bps)
         assert req.target_bps() == expected
+
+    def test_target_bps_raises_for_zero(self):
+        req = StartTrafficRequest(protocol="tcp", bps=0.0)
+        with pytest.raises(ValueError, match="greater than 0"):
+            req.target_bps()
 
 
 # --- UEState ---

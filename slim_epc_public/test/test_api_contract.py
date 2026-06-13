@@ -389,7 +389,7 @@ class TestStartTraffic:
 
         response = start_traffic(test_client, ue_id=1, bearer_id=9, Mbps=0.0)
 
-        assert_400(response, "Bearer not configured for traffic")
+        assert_400(response, "Throughput must be greater than 0")
 
 
 class TestStopTraffic:
@@ -671,6 +671,7 @@ class TestReset:
         attach_ue(test_client, ue_id=1)
         attach_ue(test_client, ue_id=2)
         start_traffic(test_client, ue_id=1, bearer_id=9, Mbps=1.0)
+        time.sleep(0.1)  # let background task settle at asyncio.sleep before reset
 
         response = test_client.post("/reset")
 

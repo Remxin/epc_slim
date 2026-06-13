@@ -246,8 +246,11 @@ def test_stop_traffic_success_marks_bearer_inactive(mock_repo, monkeypatch):
     assert response.ue_id == 1
     assert response.bearer_id == 2
     assert bearer.active is False
+    assert bearer.protocol is None
+    assert bearer.target_bps is None
     manager.stop.assert_called_once_with(1, 2)
-    mock_repo.update_bearer.assert_called_once_with(1, bearer)
+    mock_repo.update_bearer.assert_not_called()
+    mock_repo.save_ue.assert_called_once()
 
 
 def test_stop_traffic_missing_bearer_returns_http_400(mock_repo, monkeypatch):
@@ -263,9 +266,9 @@ def test_stop_traffic_missing_bearer_returns_http_400(mock_repo, monkeypatch):
 
 
 def test_get_traffic_stats_returns_zeroes_without_stats(mock_repo):
-    mock_repo.get_ue.return_value = _state()
+    mock_repo.get_ue.return_value = _state(bearers={9: BearerConfig(bearer_id=9), 2: BearerConfig(bearer_id=2)})
 
-    response = api.get_traffic_stats(1, 2, repo=mock_repo)
+    response = api.get_traffic_stats(1, 2, repo=mock_repo, unit="bps")
 
     assert response.ue_id == 1
     assert response.bearer_id == 2
@@ -280,6 +283,7 @@ def test_get_traffic_stats_uses_last_update_for_stopped_traffic(mock_repo, monke
     manager = _patch_traffic_manager(monkeypatch, MagicMock())
     manager.is_running.return_value = False
     mock_repo.get_ue.return_value = _state(
+        bearers={9: BearerConfig(bearer_id=9), 2: BearerConfig(bearer_id=2)},
         stats={
             2: ThroughputStats(
                 bearer_id=2,
@@ -294,7 +298,7 @@ def test_get_traffic_stats_uses_last_update_for_stopped_traffic(mock_repo, monke
         }
     )
 
-    response = api.get_traffic_stats(1, 2, repo=mock_repo)
+    response = api.get_traffic_stats(1, 2, repo=mock_repo, unit="bps")
 
     assert response.duration == 10.0
     assert response.tx_bps == 800
@@ -308,6 +312,7 @@ def test_get_traffic_stats_uses_current_time_for_running_traffic(mock_repo, monk
     manager.is_running.return_value = True
     monkeypatch.setattr(api.time, "time", MagicMock(return_value=30.0))
     mock_repo.get_ue.return_value = _state(
+        bearers={9: BearerConfig(bearer_id=9), 2: BearerConfig(bearer_id=2)},
         stats={
             2: ThroughputStats(
                 bearer_id=2,
@@ -322,7 +327,7 @@ def test_get_traffic_stats_uses_current_time_for_running_traffic(mock_repo, monk
         }
     )
 
-    response = api.get_traffic_stats(1, 2, repo=mock_repo)
+    response = api.get_traffic_stats(1, 2, repo=mock_repo, unit="bps")
 
     assert response.duration == 20.0
     assert response.tx_bps == 800
@@ -362,7 +367,7 @@ def test_get_ues_stats_aggregates_all_ues_with_details(mock_repo, monkeypatch):
         ),
     ]
 
-    response = api.get_ues_stats(repo=mock_repo, include_details=True)
+    response = api.get_ues_stats(repo=mock_repo, include_details=True, unit="bps")
 
     assert response.scope == "all"
     assert response.ue_count == 2
